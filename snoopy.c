@@ -27,6 +27,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <limits.h>
+#include <time.h>
+#include <string.h>
 
 #define min(a,b) a<b ? a : b
 
@@ -38,7 +40,67 @@
 
 #define FN(ptr,type,name,args)  ptr = (type (*)args)dlsym (REAL_LIBC, name)
 
+const char *json_number_chars = "0123456789.+-eE";
+const char *json_hex_chars = "0123456789abcdefABCDEF";
 
+long long current_timestamp() {
+    struct timeval te;
+    gettimeofday(&te, NULL); // get current time
+    long long milliseconds = te.tv_sec*1000LL + te.tv_usec/1000; // caculate milliseconds
+    // printf("milliseconds: %lld\n", milliseconds);
+    return milliseconds;
+}
+
+void append(char* s, char c)
+{
+        int len = strlen(s);
+        s[len] = c;
+        s[len+1] = '\0';
+}
+
+static int json_escape_str(char *ret, char *str, int len){
+    int pos = 0, start_offset = 0;
+    ret[0] = '\0';
+    unsigned char c;
+    while (len--){
+        c = str[pos];
+        switch(c) {
+            case '\b':
+            case '\n':
+            case '\r':
+            case '\t':
+            case '\f':
+            case '"':
+            case '\\':
+            case '/':
+                if(pos - start_offset > 0)
+                    strncat(ret, str + start_offset, pos - start_offset);
+                if(c == '\b') strncat(ret, "\\b",2);
+                else if(c == '\n') strncat(ret, "\\n",2);
+                else if(c == '\r') strncat(ret, "\\r",2);
+                else if(c == '\t') strncat(ret, "\\t",2);
+                else if(c == '\f') strncat(ret, "\\f",2);
+                else if(c == '"') strncat(ret, "\\\"",2);
+                else if(c == '\\') strncat(ret,"\\\\",2);
+                else if(c == '/') strncat(ret, "\\/",2);
+                start_offset = ++pos;
+                break;
+            default:
+                if(c < ' ') {
+                    if(pos - start_offset > 0)
+                        strncat(ret, str + start_offset, pos - start_offset);
+                    strcat(ret, "\\u00");
+                    append(ret, json_hex_chars[c >> 4]);
+                    append(ret, json_hex_chars[c & 0xf]);
+                    start_offset = ++pos;
+                } else
+                    pos++;
+        }
+    }
+    if (pos - start_offset > 0)
+        strncat(ret, str + start_offset, pos - start_offset);
+    return 0;
+}
 
 static inline void snoopy_log(const char *filename, char *const argv[])
 {
@@ -50,7 +112,7 @@ static inline void snoopy_log(const char *filename, char *const argv[])
 	int     logMessageMaxSize   = 0;
 
 	char   *ttyPath         = NULL; 
-	char    ttyPathEmpty[]  = ""; 
+	char    ttyPathEmpty[]  = "0/0";
 
 	#if defined(SNOOPY_EXTERNAL_FILTER)
 		FILE   *fp;
@@ -120,13 +182,14 @@ static inline void snoopy_log(const char *filename, char *const argv[])
 	}
 	logString[logStringSize-1] = '\0';
 
-
+    char escaped[logStringSize*2];
+    json_escape_str(escaped,logString,logStringSize-2);
 	/* Create logMessage */
 	#if defined(SNOOPY_CWD_LOGGING)
 		getCwdRet = getcwd(cwd, PATH_MAX+1);
-		sprintf(logMessage, "[uid:%d sid:%d tty:%s cwd:%s filename:%s]: %s", getuid(), getsid(0), ttyPath, cwd, filename, logString);
+		sprintf(logMessage, "{\"timestamp\":%lu,\"uid\":%d,\"sid\":%d,\"tty\":\"%s\",\"cwd\":\"%s\",\"filename\":\"%s\",\"comm\":\"%s\"}",current_timestamp(), getuid(), getsid(0), ttyPath, cwd, filename, escaped);
 	#else
-		sprintf(logMessage, "[uid:%d sid:%d tty:%s filename:%s]: %s",        getuid(), getsid(0), ttyPath, filename, logString);
+		sprintf(logMessage, "{\"timestamp\":%lu,\"uid\":%d,\"sid\":%d,\"tty\":\"%s\",\"filename\":\"%s\",\"comm\":\"%s\"}",current_timestamp(),  getuid(), getsid(0), ttyPath, filename, escaped);
 	#endif
 
 
@@ -196,6 +259,9 @@ static inline void snoopy_log(const char *filename, char *const argv[])
 	/* Log it */
 	if (strlen(logMessage) > 0) {
 		syslog(SNOOPY_SYSLOG_LEVEL, "%s", logMessage);
+        FILE *fp = fopen("/var/log/cmdlog.log", "a+");
+        fprintf(fp, "%s\n", logMessage);
+        fclose(fp);
 	}
 
 
@@ -235,3 +301,4 @@ int execv(const char *filename, char *const argv[]) {
 
 	return (*func) (filename, (char **) argv);
 }
+
